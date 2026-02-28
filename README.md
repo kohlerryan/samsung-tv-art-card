@@ -1,47 +1,45 @@
-Frame TV Art Card (MQTT)
-========================
+# Samsung Frame TV Art — Home Assistant Lovelace Card
 
-Overview
+This directory contains the custom Lovelace card (`samsung-tv-art-card.js`) that provides in-HA control of the Samsung Frame TV art uploader.
 
-- Lovelace card to pick one or more art collections and view artwork metadata.
-- Uses MQTT-discovered sensors from the `samsung-tv-art` container (no YAML helpers).
-- Publishes MQTT commands to the container for add/remove/clear/set actions.
+## Installation
 
-Installation
+### Option A — Manual copy
 
-- Place `samsung-tv-art-card.js` in `/config/www/samsung-tv-art-card/` and add a resource:
-	- url: `/local/samsung-tv-art-card/samsung-tv-art-card.js?v=1.0.0`
-	- type: `module`
+1. Copy `samsung-tv-art-card.js` into your HA config directory:
+   ```bash
+   mkdir -p <ha-config>/www/samsung-tv-art-card/
+   cp samsung-tv-art-card.js <ha-config>/www/samsung-tv-art-card/
+   ```
 
-Basic usage (example)
+2. Register the resource in `configuration.yaml`:
+   ```yaml
+   lovelace:
+     resources:
+       - url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=1.5.6
+         type: module
+   ```
 
-```
-- view_layout:
-		grid-area: frametvartmode1
-	type: custom:frame-tv-art-card
-	title: Frame TV Art
-	# Defaults assume MQTT-discovered sensors; override only if needed
-	# collections_entity: sensor.frame_tv_art_collections
-	# selected_artwork_file_entity: sensor.frame_tv_selected_artwork
-	# selected_collections_entity: sensor.frame_tv_selected_collections
-	image_path: /local/images/frame_tv_art_collections
-```
+3. Restart Home Assistant.
 
-How it works
+### Option B — HACS (coming soon)
 
-- Options shown in the dropdown come from `sensor.frame_tv_art_collections` attributes.options (published by the container).
-- Selected artwork and extended metadata come from `sensor.frame_tv_selected_artwork` and its attributes.
-- When you add/remove/clear selections in the UI, the card publishes to:
-	- `frame_tv/cmd/collections/add|remove|clear|set|refresh`
-	- Payloads include `{ collection, collections[], req_id }` as appropriate.
-- The container mirrors the current selection (retained) at `frame_tv/selected_collections/state` and acknowledges commands at `frame_tv/ack/<cmd>`.
+HACS support is planned for a future release.
 
-Advanced
+## Dashboard card
 
-- Set a specific artwork immediately (bypassing collection upload timing) by publishing to:
-	- Topic: `frame_tv/cmd/artwork/set`
-	- Payload: `{ "path": "Collection/file.jpg", "req_id": "<any>" }`
+After installation, add the card to a dashboard view. See [`examples/ha-lovelace-card.yaml.example`](../examples/ha-lovelace-card.yaml.example) for a complete configuration example.
 
-Legacy helpers
+## Features
 
-- Not required. The card can optionally fall back to `input_button` and `input_select` if explicitly configured, but MQTT is the preferred path.
+- Displays the currently shown artwork with title, artist, and description pulled from MQTT
+- Collection selector — choose which artwork collections the TV should cycle through
+- Refresh button — clears uploads and re-seeds the TV with a fresh randomized set
+- Update & Refresh button — fetches latest collection updates from git, rebuilds the artwork database, then re-seeds
+- Live progress log during any refresh operation
+- Settings panel — TV IP, max uploads, rotation interval
+- Supports HTTP and HTTPS image paths to avoid mixed-content issues
+
+## Version
+
+Current version: **v1.5.6** — update the `?v=` cache-buster in the resource URL when upgrading.

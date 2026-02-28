@@ -1,5 +1,5 @@
 /**
- * Frame TV Art Card v1.0.0
+ * Frame TV Art Card v0.1.0-alpha.2
  */
 
 class FrameTVArtCard extends HTMLElement {
@@ -9,6 +9,20 @@ class FrameTVArtCard extends HTMLElement {
     this._hass = null;
     this._dropdownOpen = false;
     this._lastStateHash = '';
+    this._statusMessage = '';
+    this._refreshAck = { status: '', message: '', req_id: '', updated: 0 };
+    this._refreshRequest = { req_id: '', updated: 0 };
+    this._syncAck = { status: '', message: '', req_id: '', updated: 0 };
+    this._refreshAckUnsubscribe = null;
+    this._refreshCmdUnsubscribe = null;
+    this._syncAckUnsubscribe = null;
+    this._refreshSubscribing = false;
+    this._setStatus = null;
+    this._refreshInfoMsg = null;
+    this._refreshInProgress = false;
+    this._refreshProgressMsg = '';
+    this._docClickHandler = null;
+    this._pollAppliedTimer = null;
   }
 
   setConfig(config) {
@@ -21,6 +35,9 @@ class FrameTVArtCard extends HTMLElement {
       collections_entity: config.collections_entity || 'sensor.frame_tv_art_collections',
       selected_artwork_file_entity: config.selected_artwork_file_entity || 'sensor.frame_tv_art_selected_artwork',
       selected_collections_entity: config.selected_collections_entity || 'sensor.frame_tv_art_selected_collections',
+      refresh_cmd_topic: config.refresh_cmd_topic || 'frame_tv/cmd/collections/refresh',
+      refresh_ack_topic: config.refresh_ack_topic || 'frame_tv/ack/collections/refresh',
+      sync_ack_topic: config.sync_ack_topic || 'frame_tv/ack/settings/sync_collections',
       // Optional: allow overriding legacy helpers if desired
       add_button_entity: config.add_button_entity, // legacy keys no longer used
       remove_button_entity: config.remove_button_entity, // legacy keys no longer used
@@ -42,6 +59,7 @@ class FrameTVArtCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._ensureRefreshSubscriptions();
     
     // Sync baseline from HA state; keep staged when dropdown is open
     const fromState = this._getSelectedCollections();
@@ -66,7 +84,210 @@ class FrameTVArtCard extends HTMLElement {
     const file = this._getSelectedData().file || '';
     const selected = this._getState(this._config.selected_collections_entity);
     const options = this._getOptions(this._config.collections_entity).join(',');
-    return `${file}|${selected}|${options}`;
+    const ackStatus = (this._refreshAck && this._refreshAck.status) || '';
+    const ackMessage = (this._refreshAck && this._refreshAck.message) || '';
+    const ackReqId = (this._refreshAck && this._refreshAck.req_id) || '';
+    const syncStatus = (this._syncAck && this._syncAck.status) || '';
+    return `${file}|${selected}|${options}|${ackStatus}|${ackMessage}|${ackReqId}|${syncStatus}|${this._refreshInProgress}`;
+  }
+
+  disconnectedCallback() {
+    if (typeof this._refreshAckUnsubscribe === 'function') {
+      try { this._refreshAckUnsubscribe(); } catch (_) {}
+    }
+    if (typeof this._refreshCmdUnsubscribe === 'function') {
+      try { this._refreshCmdUnsubscribe(); } catch (_) {}
+    }
+    if (typeof this._syncAckUnsubscribe === 'function') {
+      try { this._syncAckUnsubscribe(); } catch (_) {}
+    }
+    this._refreshAckUnsubscribe = null;
+    this._refreshCmdUnsubscribe = null;
+    this._syncAckUnsubscribe = null;
+    this._refreshSubscribing = false;
+    // Clean up document-level listener and polling timer
+    if (this._docClickHandler) {
+      document.removeEventListener('click', this._docClickHandler, { capture: true });
+      this._docClickHandler = null;
+    }
+    if (this._pollAppliedTimer) {
+      clearTimeout(this._pollAppliedTimer);
+      this._pollAppliedTimer = null;
+    }
+  }
+
+  _ensureRefreshSubscriptions() {
+    if (!this._hass || !this._hass.connection) return;
+    if (this._refreshSubscribing) return;
+    if (this._refreshAckUnsubscribe && this._refreshCmdUnsubscribe && this._syncAckUnsubscribe) return;
+    this._refreshSubscribing = true;
+
+    const ensureAck = this._refreshAckUnsubscribe
+      ? Promise.resolve(this._refreshAckUnsubscribe)
+      : this._hass.connection.subscribeMessage(
+          (msg) => this._handleRefreshAckMessage(msg),
+          { type: 'mqtt/subscribe', topic: this._config.refresh_ack_topic }
+        );
+
+    const ensureCmd = this._refreshCmdUnsubscribe
+      ? Promise.resolve(this._refreshCmdUnsubscribe)
+      : this._hass.connection.subscribeMessage(
+          (msg) => this._handleRefreshRequestMessage(msg),
+          { type: 'mqtt/subscribe', topic: this._config.refresh_cmd_topic }
+        );
+
+    const ensureSyncAck = this._syncAckUnsubscribe
+      ? Promise.resolve(this._syncAckUnsubscribe)
+      : this._hass.connection.subscribeMessage(
+          (msg) => this._handleSyncAckMessage(msg),
+          { type: 'mqtt/subscribe', topic: this._config.sync_ack_topic }
+        );
+
+    Promise.all([ensureAck, ensureCmd, ensureSyncAck])
+      .then(([ackUnsub, cmdUnsub, syncAckUnsub]) => {
+        if (!this._refreshAckUnsubscribe) this._refreshAckUnsubscribe = ackUnsub;
+        if (!this._refreshCmdUnsubscribe) this._refreshCmdUnsubscribe = cmdUnsub;
+        if (!this._syncAckUnsubscribe) this._syncAckUnsubscribe = syncAckUnsub;
+      })
+      .catch(() => {})
+      .finally(() => {
+        this._refreshSubscribing = false;
+      });
+  }
+
+  _parseJsonPayload(message) {
+    const raw = message && Object.prototype.hasOwnProperty.call(message, 'payload')
+      ? message.payload
+      : message;
+    if (raw == null) return {};
+    if (typeof raw === 'object') return raw;
+    if (typeof raw !== 'string') return {};
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  _syncRefreshAckStatus() {
+    const ackStatus = String((this._refreshAck && this._refreshAck.status) || '').toLowerCase();
+    const ackMessage = String((this._refreshAck && this._refreshAck.message) || '').trim();
+    const ackReqId = this._refreshAck && this._refreshAck.req_id != null ? String(this._refreshAck.req_id) : '';
+    const reqMatches = !this._lastRefreshReqId || !ackReqId || String(this._lastRefreshReqId) === ackReqId;
+    if (!reqMatches) return;
+
+    const renderLog = () => {
+      const infoEl = this.querySelector('.ftv-info');
+      if (infoEl) infoEl.innerHTML = this._refreshProgressLog.map(l => `<div>${l}</div>`).join('');
+    };
+
+    const appendProgress = (msg) => {
+      if (!this._refreshInProgress) {
+        // First message: lock the display, seed the log, trigger full re-render with standby bg
+        this._refreshProgressLog = ['Please stand by as artwork is loaded...'];
+        if (msg) this._refreshProgressLog.push(msg);
+        this._refreshProgressMsg = msg;
+        this._refreshInProgress = true;
+        this._lastStateHash = '';
+        this._render();
+      } else {
+        // Deduplicate: drop this message if it already appears in the log.
+        // This silently absorbs duplicate deliveries caused by accumulated MQTT
+        // subscriptions (HA WS reconnects build up extra subscriptions over time).
+        if (this._refreshProgressLog.includes(msg)) return;
+        this._refreshProgressLog.push(msg);
+        this._refreshProgressMsg = msg;
+        renderLog();
+      }
+    };
+
+    const finishProgress = (msg, delayMs) => {
+      // Guard: if not in progress, a late duplicate finish message arrived — drop it.
+      if (!this._refreshInProgress) return;
+      // Deduplicate finish messages (multiple subscriptions can deliver the same ok/error).
+      if (this._refreshProgressLog.includes(msg)) return;
+      this._refreshProgressLog.push(msg);
+      this._refreshProgressMsg = msg;
+      renderLog();
+      setTimeout(() => {
+        if (this._refreshInProgress) {
+          this._refreshInProgress = false;
+          this._refreshProgressMsg = '';
+          this._refreshProgressLog = [];
+          this._lastStateHash = '';
+          this._render();
+        }
+      }, delayMs);
+    };
+
+    if (ackStatus === 'queued') {
+      appendProgress(ackMessage || 'Refresh queued. Waiting for backend...');
+    } else if (ackStatus === 'started') {
+      appendProgress(ackMessage || 'Switching TV to standby...');
+    } else if (ackStatus === 'progress') {
+      appendProgress(ackMessage || 'Refresh in progress...');
+    } else if (ackStatus === 'ok') {
+      finishProgress(ackMessage || 'Refresh complete.', 8000);
+    } else if (ackStatus === 'error') {
+      finishProgress(ackMessage ? `Refresh failed: ${ackMessage}` : 'Refresh failed.', 12000);
+    }
+  }
+
+  _handleRefreshRequestMessage(message) {
+    const payload = this._parseJsonPayload(message);
+    const reqId = payload && payload.req_id != null ? String(payload.req_id) : '';
+    this._refreshRequest = { req_id: reqId, updated: Date.now() };
+    const reqMatches = !this._lastRefreshReqId || !reqId || String(this._lastRefreshReqId) === reqId;
+    if (reqMatches) {
+      this._refreshAck = {
+        status: 'queued',
+        message: 'Refresh request queued. Waiting for backend confirmation...',
+        req_id: reqId,
+        updated: Date.now(),
+      };
+      this._syncRefreshAckStatus();
+    }
+  }
+
+  _handleRefreshAckMessage(message) {
+    const payload = this._parseJsonPayload(message);
+    const status = String((payload && payload.status) || '').toLowerCase();
+    const messageText = String((payload && payload.message) || '').trim();
+    const reqId = payload && payload.req_id != null ? String(payload.req_id) : '';
+    // Adopt any incoming req_id when a new reseed starts and we're not already
+    // locked. This ensures auto-triggered reseeds (selection change, startup)
+    // are never silently filtered by a stale _lastRefreshReqId from a prior button press.
+    if ((status === 'started' || status === 'queued') && !this._refreshInProgress) {
+      this._lastRefreshReqId = reqId || null;
+    }
+    this._refreshAck = {
+      status,
+      message: messageText,
+      req_id: reqId,
+      updated: Date.now(),
+    };
+    this._syncRefreshAckStatus();
+  }
+
+  _handleSyncAckMessage(message) {
+    const payload = this._parseJsonPayload(message);
+    const status = String((payload && payload.status) || '').toLowerCase();
+    const messageText = String((payload && payload.message) || '').trim();
+    const reqId = payload && payload.req_id != null ? String(payload.req_id) : '';
+    this._syncAck = {
+      status,
+      message: messageText,
+      req_id: reqId,
+      updated: Date.now(),
+    };
+    if (typeof this._setStatus !== 'function') return;
+    if (status === 'started') {
+      this._setStatus(messageText || 'Collections sync started...', 0);
+    } else if (status === 'ok') {
+      this._setStatus(messageText || 'Collections sync completed.', 10000);
+    } else if (status === 'error') {
+      this._setStatus(messageText ? `Collections sync failed: ${messageText}` : 'Collections sync failed.', 12000);
+    }
   }
 
   _getState(entityId) {
@@ -93,6 +314,13 @@ class FrameTVArtCard extends HTMLElement {
   }
 
   _getSelectedCollections() {
+    const attrs = this._getAttrs(this._config.selected_collections_entity);
+    if (attrs && Array.isArray(attrs.selected_labels)) {
+      return attrs.selected_labels.map(s => String(s || '').trim()).filter(s => s.length > 0);
+    }
+    if (attrs && Array.isArray(attrs.selected_collections)) {
+      return attrs.selected_collections.map(s => String(s || '').trim()).filter(s => s.length > 0);
+    }
     const raw = this._getState(this._config.selected_collections_entity);
     if (!raw || raw === 'unknown' || raw === 'unavailable' || raw === 'None' || raw === '') {
       return [];
@@ -220,12 +448,16 @@ class FrameTVArtCard extends HTMLElement {
   }
 
   async _updateArtworkText(file, _, isStandby) {
+    // Don't overwrite progress messages while a refresh is running
+    if (this._refreshInProgress) return;
     try {
       let artworkText;
       const entityId = this._config.selected_artwork_file_entity;
       const attrs = this._getAttrs(entityId);
+      const normalizedFile = String(file || '').trim().toLowerCase();
+      const standbyLike = isStandby || !normalizedFile || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
       
-      if (isStandby) {
+      if (standbyLike) {
         artworkText = 'Please stand by as artwork is loaded...';
       } else {
         // Prefer MQTT attributes if provided by the sensor
@@ -297,7 +529,9 @@ class FrameTVArtCard extends HTMLElement {
       const fTitle = fallbackInfo?.title || file || 'Selected Artwork';
       const fYear = fallbackInfo?.year || null;
       const fArtist = fallbackInfo?.artist || null;
-      const artworkText = isStandby 
+      const normalizedFile = String(file || '').trim().toLowerCase();
+      const standbyLike = isStandby || !normalizedFile || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
+      const artworkText = standbyLike 
         ? 'Please stand by as artwork is loaded...'
         : `
         ${fArtist ? `<div style=\"line-height:1.3; margin-top: 2px;\"><span style=\"font-size:1.1em; font-weight:bold; color: white;\">${this._formatInline(fArtist)}</span></div>` : ''}
@@ -312,21 +546,15 @@ class FrameTVArtCard extends HTMLElement {
   }
 
   _updateBackgroundFromCsv() {
-    const entityId = this._config.selected_artwork_file_entity;
     const { file } = this._getSelectedData();
-    const attrs = this._getAttrs(entityId);
-    if (!file || file === 'unknown' || file === 'unavailable' || file === 'None' || file === '' || file === 'standby.png') {
+    const normalizedFile = String(file || '').trim().toLowerCase();
+    // Skip standby / missing / sentinel values — background is already set by _render()
+    if (!normalizedFile || normalizedFile === 'standby.png' || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none') {
       return;
     }
-    // Prefer collection from attributes, then artist_name; fallback to filename prefix
-    let folder = attrs.collection || attrs.artist_name || null;
-    if (!folder) {
-      const match = file.match(/^(.+?)_[^_]+_/);
-      if (match) folder = match[1];
-    }
-    if (folder) {
-      const base = this._getBaseImagePath();
-      const bgUrl = `${base}/${encodeURIComponent(folder)}/${encodeURIComponent(file)}`;
+    // Reuse _getBackgroundUrl() to avoid duplicating folder-resolution logic
+    const bgUrl = this._getBackgroundUrl();
+    if (bgUrl) {
       
       // Update the card background directly
       const cardDiv = this.querySelector('.ftv-card');
@@ -365,15 +593,6 @@ class FrameTVArtCard extends HTMLElement {
     if (this._hass) this._hass.callService(domain, service, data);
   }
 
-  _handleCollectionToggle(collection, wasSelected) {
-    // Stage-only: do not publish until Apply is clicked
-    if (wasSelected) {
-      this._currentSelected = this._currentSelected.filter(s => s !== collection);
-    } else {
-      if (!this._currentSelected.includes(collection)) this._currentSelected.push(collection);
-    }
-  }
-
   _getBackgroundUrl() {
     const entityId = this._config.selected_artwork_file_entity;
     const { file } = this._getSelectedData();
@@ -384,7 +603,10 @@ class FrameTVArtCard extends HTMLElement {
       return `${this._getBaseImagePath()}/standby.png`;
     }
 
-    // Prefer explicit collection from attributes, then artist_name; else fallback to filename prefix
+    // Prefer explicit artwork_dir from attributes, then collection, then artist_name; else fallback to filename prefix
+    if (attrs && attrs.artwork_dir) {
+      return `${this._getBaseImagePath()}/${encodeURIComponent(attrs.artwork_dir)}/${encodeURIComponent(file)}`;
+    }
     if (attrs && attrs.collection) {
       return `${this._getBaseImagePath()}/${encodeURIComponent(attrs.collection)}/${encodeURIComponent(file)}`;
     }
@@ -404,14 +626,17 @@ class FrameTVArtCard extends HTMLElement {
   _render() {
     if (!this._hass) return;
     const { file } = this._getSelectedData();
+    const normalizedFile = String(file || '').trim().toLowerCase();
     const selectedCollections = this._baselineSelected || this._getSelectedCollections();
     const options = this._getOptions(this._config.collections_entity).filter(opt => opt !== '@eaDir');
     const selectedOptions = options.filter(opt => selectedCollections.includes(opt)).sort();
     const unselectedOptions = options.filter(opt => !selectedCollections.includes(opt)).sort();
     const sortedOptions = [...selectedOptions, ...unselectedOptions];
     const artworkInfo = this._parseArtworkInfo(file);
-    const bgUrl = this._getBackgroundUrl();
-    const isStandby = file === 'standby.png';
+    // While a refresh is in progress, force standby display regardless of HA state
+    const standbyBgUrl = this._config.standby_image_path || `${this._getBaseImagePath()}/standby.png`;
+    const bgUrl = this._refreshInProgress ? standbyBgUrl : this._getBackgroundUrl();
+    const isStandby = this._refreshInProgress || !normalizedFile || normalizedFile === 'standby.png' || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
     const hasArtwork = bgUrl !== null;
 
     // Initialize staged selection to baseline on render
@@ -426,10 +651,17 @@ class FrameTVArtCard extends HTMLElement {
     // Initial placeholder - will be updated asynchronously by _updateArtworkText
     let artworkText = 'Loading...';
 
-    // Update artwork text asynchronously from database (don't block render)
-    setTimeout(() => {
-      this._updateArtworkText(file, file, isStandby);
-    }, 100);
+    // Update artwork text — skipped when refresh is in progress (progress msg shown instead)
+    if (this._refreshInProgress) {
+      setTimeout(() => {
+        const infoEl = this.querySelector('.ftv-info');
+        if (infoEl) infoEl.innerHTML = this._refreshProgressLog.map(l => `<div>${l}</div>`).join('');
+      }, 0);
+    } else {
+      setTimeout(() => {
+        this._updateArtworkText(file, file, isStandby);
+      }, 100);
+    }
 
     this.innerHTML = `
       <ha-card>
@@ -620,6 +852,12 @@ class FrameTVArtCard extends HTMLElement {
             border-radius: 8px;
             ${hasArtwork ? 'background: rgba(0,0,0,0.5); color: white;' : ''}
           }
+          .ftv-status {
+            margin-top: 0;
+            min-height: 0;
+            font-size: 0.85em;
+            color: ${hasArtwork ? 'rgba(255,255,255,0.6)' : 'var(--secondary-text-color)'};
+          }
           .ftv-apply {
             width: 40px;
             height: 40px;
@@ -688,6 +926,7 @@ class FrameTVArtCard extends HTMLElement {
                   <ha-icon icon="mdi:delete"></ha-icon>
                 </button>
               </div>
+              <div class="ftv-status" id="ftv-status">${this._statusMessage || ''}</div>
           </div>
           <div class="ftv-info">${artworkText}</div>
           <div class="ftv-settings" id="ftv-settings">
@@ -706,6 +945,7 @@ class FrameTVArtCard extends HTMLElement {
             <div class="actions">
               <button class="ftv-btn primary" id="ftv-apply-env" disabled>Apply & Refresh</button>
               <button class="ftv-btn ghost" id="ftv-restart-env">Restart Uploader</button>
+              <button class="ftv-btn ghost" id="ftv-sync-collections">Update &amp; Refresh</button>
             </div>
             <div class="ftv-label" id="ftv-env-msg" style="margin-top:6px;"></div>
           </div>
@@ -720,8 +960,24 @@ class FrameTVArtCard extends HTMLElement {
     const inIp = this.querySelector('#ftv-tv-ip');
     const btnApplyEnv = this.querySelector('#ftv-apply-env');
     const btnRestartEnv = this.querySelector('#ftv-restart-env');
+    const btnSyncCollections = this.querySelector('#ftv-sync-collections');
     const btnRefresh = this.querySelector('#ftv-refresh');
+    const statusEl = this.querySelector('#ftv-status');
     const envMsg = this.querySelector('#ftv-env-msg');
+    const setStatus = (msg = '', timeoutMs = 6000) => {
+      this._statusMessage = msg || '';
+      if (statusEl) statusEl.textContent = this._statusMessage;
+      if (timeoutMs > 0 && msg) {
+        setTimeout(() => {
+          if (this._statusMessage === msg) {
+            this._statusMessage = '';
+            if (statusEl) statusEl.textContent = '';
+          }
+        }, timeoutMs);
+      }
+    };
+    this._setStatus = setStatus;
+    this._syncRefreshAckStatus();
     const settingsEntity = this._config.settings_entity;
     let envBaseline = {};
     function envDirty() {
@@ -754,11 +1010,17 @@ class FrameTVArtCard extends HTMLElement {
         panel.classList.toggle('open');
         if (panel.classList.contains('open')) loadEnv();
       });
-      document.addEventListener('click', (e) => {
+      // Remove previous document-level listener before registering a new one
+      if (this._docClickHandler) {
+        document.removeEventListener('click', this._docClickHandler, { capture: true });
+        this._docClickHandler = null;
+      }
+      this._docClickHandler = (e) => {
         const path = (typeof e.composedPath === 'function') ? e.composedPath() : [];
         const inside = (panel && path.includes(panel)) || (gear && path.includes(gear));
         if (!inside) panel.classList.remove('open');
-      }, { capture: true });
+      };
+      document.addEventListener('click', this._docClickHandler, { capture: true });
     }
     if (inMax) inMax.addEventListener('input', envDirty);
     if (inMins) inMins.addEventListener('input', envDirty);
@@ -795,16 +1057,49 @@ class FrameTVArtCard extends HTMLElement {
       } catch (_) {}
     });
 
-    if (btnRefresh) btnRefresh.addEventListener('click', (e) => {
+    if (btnSyncCollections) btnSyncCollections.addEventListener('click', async (e) => {
       e.stopPropagation();
       try {
+        const reqId = Date.now();
+        this._lastRefreshReqId = reqId;
+        this._refreshAck = {
+          status: 'queued',
+          message: 'Update & refresh requested. Fetching latest collections...',
+          req_id: String(reqId),
+          updated: Date.now(),
+        };
+        this._syncRefreshAckStatus();
         if (this._hass) {
-          this._hass.callService('mqtt', 'publish', { topic: 'frame_tv/cmd/collections/refresh', payload: JSON.stringify({ req_id: Date.now() }), qos: 1, retain: false });
+          await this._hass.callService('mqtt', 'publish', { topic: 'frame_tv/cmd/settings/sync_collections', payload: JSON.stringify({ req_id: reqId }), qos: 1, retain: false });
+        }
+        btnSyncCollections.disabled = true;
+        setTimeout(() => { btnSyncCollections.disabled = false; }, 6000);
+      } catch (err) {
+        setStatus('Update & refresh failed to send. Check MQTT integration/service.', 8000);
+      }
+    });
+
+    if (btnRefresh) btnRefresh.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const reqId = Date.now();
+        this._lastRefreshReqId = reqId;
+        this._refreshAck = {
+          status: 'queued',
+          message: 'Refresh command sent. Waiting for backend confirmation...',
+          req_id: String(reqId),
+          updated: Date.now(),
+        };
+        this._syncRefreshAckStatus();
+        if (this._hass) {
+          await this._hass.callService('mqtt', 'publish', { topic: this._config.refresh_cmd_topic, payload: JSON.stringify({ req_id: reqId }), qos: 1, retain: false });
         }
         if (envMsg) envMsg.textContent = 'Requested collections refresh...';
         btnRefresh.disabled = true;
         setTimeout(() => { btnRefresh.disabled = false; if (envMsg && envMsg.textContent==='Requested collections refresh...') envMsg.textContent=''; }, 6000);
-      } catch (_) {}
+      } catch (err) {
+        setStatus('Refresh failed to send. Check MQTT integration/service.', 8000);
+      }
     });
 
     // Poll for applied values as a soft ACK (HA frontend cannot subscribe MQTT directly)
@@ -820,9 +1115,10 @@ class FrameTVArtCard extends HTMLElement {
         );
         if (ok && envMsg) { envMsg.textContent = 'Settings applied.'; setTimeout(() => { if (envMsg.textContent==='Settings applied.') envMsg.textContent=''; }, 6000); }
       } catch (_) {}
-      setTimeout(pollApplied, 2000);
+      this._pollAppliedTimer = setTimeout(pollApplied, 2000);
     };
-    setTimeout(pollApplied, 2000);
+    if (this._pollAppliedTimer) clearTimeout(this._pollAppliedTimer);
+    this._pollAppliedTimer = setTimeout(pollApplied, 2000);
 
     // Event handlers
     const trigger = this.querySelector('#ftv-trigger');
@@ -857,7 +1153,6 @@ class FrameTVArtCard extends HTMLElement {
         // Toggle clear button visibility dynamically
         const clearBtn = this.querySelector('#ftv-clear');
         if (clearBtn) clearBtn.style.display = this._currentSelected.length > 0 ? 'flex' : 'none';
-        this._handleCollectionToggle(val, wasSelected);
         // Toggle apply based on diff from baseline
         const applyBtn = this.querySelector('#ftv-apply');
         const changed = !this._arraysEqual(this._currentSelected, this._baselineSelected);
@@ -926,7 +1221,7 @@ class FrameTVArtCard extends HTMLElement {
     }
   }
 
-console.info('%c FRAME-TV-ART-CARD %c v1.5.0 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
+console.info('%c FRAME-TV-ART-CARD %c v1.5.6 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
 
 // Register custom element so Lovelace can use <frame-tv-art-card>
 try {
