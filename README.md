@@ -99,6 +99,33 @@ README.md
 
 ---
 
+## Automations
+
+### Trigger a refresh on HA startup
+
+The card displays live progress from the backend whenever a refresh is triggered — including auto-triggered reseeds. A useful companion automation publishes a refresh command shortly after HA starts so the TV is always seeded with fresh artwork after a restart:
+
+```yaml
+# Frame TV Art Collections — trigger refresh on HA startup
+automation:
+  - alias: 'Update Frame TV Art Collections on Startup'
+    initial_state: true
+    trigger:
+      - platform: homeassistant
+        event: start
+    action:
+      - delay: '00:01:00'
+      - service: mqtt.publish
+        data:
+          topic: frame_tv/cmd/collections/refresh
+          payload: '{"req_id":"ha_start"}'
+    mode: single
+```
+
+The 1-minute delay gives the `samsung-tv-art` backend container time to fully start before the command arrives. Adjust as needed.
+
+---
+
 ## Version
 
 Current version: **v0.1.0-beta.1** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
