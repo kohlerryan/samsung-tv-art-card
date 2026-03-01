@@ -46,7 +46,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
    ```yaml
    lovelace:
      resources:
-       - url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=1.5.6
+       - url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=0.1.0-beta.1
          type: module
    ```
 
@@ -101,4 +101,4 @@ README.md
 
 ## Version
 
-Current version: **v1.5.6** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
+Current version: **v0.1.0-beta.1** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
