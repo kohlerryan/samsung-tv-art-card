@@ -1,10 +1,40 @@
-# Samsung Frame TV Art — Home Assistant Lovelace Card
+# Samsung Frame TV Art Card
 
-This directory contains the custom Lovelace card (`samsung-tv-art-card.js`) that provides in-HA control of the Samsung Frame TV art uploader.
+A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for controlling a Samsung Frame TV art display — browse collections, trigger artwork reseeds, and monitor live refresh progress, all from your HA dashboard.
+
+![Card showing current artwork with artist and title metadata](images/hacard.png)
+
+---
+
+## Features
+
+- **Artwork display** — shows the currently active image with artist name, title, year, medium, and description pulled from MQTT sensor attributes
+- **Collection selector** — multi-select dropdown to choose which art collections the TV should cycle through
+
+  ![Collection selector dropdown and controls](images/hacard_control.png)
+
+- **Refresh** — clears uploads and re-seeds the TV with a fresh randomised set
+- **Update & Refresh** — fetches the latest collection updates from git, rebuilds the artwork database, then re-seeds
+- **Live progress log** — real-time status messages streamed from the backend during any refresh operation
+- **Settings panel** — configure TV IP address, max uploads, and rotation interval without leaving the dashboard
+
+  ![Settings panel with TV IP, max uploads, and interval fields](images/hacard_settings.png)
+
+- **Mixed-content safe** — resolves image paths over HTTP or HTTPS to match the HA frontend protocol
+
+---
 
 ## Installation
 
-### Option A — Manual copy
+### Option A — HACS
+
+1. In HACS → **Frontend** → ⋮ → **Custom repositories**, add:
+   - **URL**: `https://github.com/<your-user>/samsung-tv-art-card`
+   - **Category**: Lovelace
+2. Click **Install** on the Samsung TV Art Card entry.
+3. Reload the browser.
+
+### Option B — Manual
 
 1. Copy `samsung-tv-art-card.js` into your HA config directory:
    ```bash
@@ -22,24 +52,53 @@ This directory contains the custom Lovelace card (`samsung-tv-art-card.js`) that
 
 3. Restart Home Assistant.
 
-### Option B — HACS (coming soon)
-
-HACS support is planned for a future release.
+---
 
 ## Dashboard card
 
-After installation, add the card to a dashboard view. See [`examples/ha-lovelace-card.yaml.example`](../examples/ha-lovelace-card.yaml.example) for a complete configuration example.
+Add the card to any dashboard view. Minimal configuration:
 
-## Features
+```yaml
+type: custom:frame-tv-art-card
+title: Frame TV Art
+image_path: /local/images/frame_tv_art_collections
+```
 
-- Displays the currently shown artwork with title, artist, and description pulled from MQTT
-- Collection selector — choose which artwork collections the TV should cycle through
-- Refresh button — clears uploads and re-seeds the TV with a fresh randomized set
-- Update & Refresh button — fetches latest collection updates from git, rebuilds the artwork database, then re-seeds
-- Live progress log during any refresh operation
-- Settings panel — TV IP, max uploads, rotation interval
-- Supports HTTP and HTTPS image paths to avoid mixed-content issues
+All entity and MQTT topic names default to the values published by the `samsung-tv-art` backend container and can be overridden if needed:
+
+```yaml
+type: custom:frame-tv-art-card
+title: Frame TV Art
+image_path: /local/images/frame_tv_art_collections
+
+# Override only if your sensor names differ from the defaults
+settings_entity: sensor.frame_tv_art_settings
+collections_entity: sensor.frame_tv_art_collections
+selected_artwork_file_entity: sensor.frame_tv_art_selected_artwork
+selected_collections_entity: sensor.frame_tv_art_selected_collections
+
+# Override only if your MQTT topics differ
+refresh_cmd_topic: frame_tv/cmd/collections/refresh
+refresh_ack_topic: frame_tv/ack/collections/refresh
+sync_ack_topic: frame_tv/ack/settings/sync_collections
+```
+
+---
+
+## Repository structure
+
+```
+samsung-tv-art-card.js   # Card source (loaded by HA as a Lovelace resource)
+hacs.json                # HACS metadata
+images/                  # Screenshots used in this README
+  hacard.png
+  hacard_control.png
+  hacard_settings.png
+README.md
+```
+
+---
 
 ## Version
 
-Current version: **v1.5.6** — update the `?v=` cache-buster in the resource URL when upgrading.
+Current version: **v1.5.6** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
