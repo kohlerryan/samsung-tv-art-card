@@ -15,10 +15,12 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
 
   ![Collection selector dropdown and controls](images/hacard_control.png)
 
+- **Slideshow controls** — popup panel to configure slideshow mode (random / sequential), rotation interval, and max uploads; includes an Apply button to push settings to the backend
+- **Manual override** — toggle to pause the automatic slideshow and hand-pick artwork from a grid of available images; toggle off to resume normal rotation
 - **Refresh** — clears uploads and re-seeds the TV with a fresh randomised set
 - **Update & Refresh** — fetches the latest collection updates from git, rebuilds the artwork database, then re-seeds
-- **Live progress log** — real-time status messages streamed from the backend during any refresh operation
-- **Settings panel** — configure TV IP address, max uploads, and rotation interval without leaving the dashboard
+- **Live progress log** — real-time status messages streamed from the backend during any refresh operation; state is preserved across page reloads for up to 15 minutes
+- **Settings panel** — configure TV IP address and MQTT broker connection (host, port, username, password) without leaving the dashboard; Apply & Restart pushes the new config and restarts the backend container
 
   ![Settings panel with TV IP, max uploads, and interval fields](images/hacard_settings.png)
 
@@ -48,7 +50,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for cont
    ```yaml
    lovelace:
      resources:
-       - url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=0.1.0-beta.1
+       - url: /local/samsung-tv-art-card/samsung-tv-art-card.js?v=v0.2.0-beta.1
          type: module
    ```
 
@@ -130,4 +132,4 @@ The 1-minute delay gives the `samsung-tv-art` backend container time to fully st
 
 ## Version
 
-Current version: **v0.1.0** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
+Current version: **v0.2.0-beta.3** — bump the `?v=` cache-buster in the resource URL whenever you upgrade.
