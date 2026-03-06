@@ -40,6 +40,7 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowAvailUnsubscribe = null;
     this._slideshowPostClear = false;           // blocks stale current_paths reseed after clear
     this._slideshowClearRefreshPending = false;  // set when Clear fires collections/refresh
+    this._postUploadRefreshTimer = null;         // retries available request after upload completes
     // Restore progress log if page was refreshed mid-sync (max 15 min TTL)
     try {
       const _raw = sessionStorage.getItem('ftvHaRefreshLog');
@@ -374,6 +375,11 @@ class FrameTVArtCard extends HTMLElement {
     this._slideshowUpdateMins = parseInt((payload && payload.update_minutes) || 0, 10);
     this._slideshowMode = mode;
     const uploadJustFinished = prevUploading && !this._slideshowUploading;
+    // Cancel any in-flight post-upload refresh when a new upload starts
+    if (this._slideshowUploading && this._postUploadRefreshTimer) {
+      clearTimeout(this._postUploadRefreshTimer);
+      this._postUploadRefreshTimer = null;
+    }
     if (mode !== prevMode) {
       if (mode === 'override') {
         // New override applied (auto → override): paths are authoritative, reset post-clear flag.
@@ -404,37 +410,64 @@ class FrameTVArtCard extends HTMLElement {
       }
       this._lastStateHash = '';
       if (this._hass) this._render();
-    } else if (this._overridePanelOpen) {
-      if (uploadJustFinished) {
-        this._slideshowReverting = false;
-        if (mode === 'override') {
-          // Override upload completed: override_paths are confirmed by server.
-          this._slideshowPostClear = false;
-          this._slideshowClearRefreshPending = false;
-          if (this._slideshowOverridePaths.length) {
-            this._slideshowSelected = new Set(this._slideshowOverridePaths);
-          }
-        } else if (this._slideshowClearRefreshPending) {
-          // Full collections/refresh triggered by Clear Override has completed.
-          // current_paths is now fresh and authoritative — seed the grid from it.
-          this._slideshowClearRefreshPending = false;
-          this._slideshowPostClear = false;
-          this._slideshowSelected = new Set(this._slideshowCurrentPaths);
-        } else {
-          // Background auto cycle: current_paths is still unreliable. Keep grid empty.
-          this._slideshowPostClear = true;
-          this._slideshowSelected = new Set();
-        }
-        if (this._hass) {
-          this._hass.callService('mqtt', 'publish', {
-            topic: 'frame_tv/cmd/slideshow/available/request',
-            payload: JSON.stringify({ req_id: Date.now() }),
-            qos: 1, retain: false,
-          }).catch(() => {});
-        }
+    } else {
+      // Mode unchanged. If override, resync selection from server-authoritative override_paths
+      // (handles server-side pruning of deleted files from override state).
+      if (mode === 'override' && !this._slideshowUploading && !this._slideshowPostClear
+          && this._slideshowOverridePaths.length) {
+        this._slideshowSelected = new Set(this._slideshowOverridePaths);
       }
-      this._renderOverrideGrid();
+      if (this._overridePanelOpen) {
+        if (uploadJustFinished) {
+          this._schedulePostUploadRefresh(5);
+          this._slideshowReverting = false;
+          if (mode === 'override') {
+            // Override upload completed: override_paths are confirmed by server.
+            this._slideshowPostClear = false;
+            this._slideshowClearRefreshPending = false;
+            if (this._slideshowOverridePaths.length) {
+              this._slideshowSelected = new Set(this._slideshowOverridePaths);
+            }
+          } else if (this._slideshowClearRefreshPending) {
+            // Full collections/refresh triggered by Clear Override has completed.
+            // current_paths is now fresh and authoritative — seed the grid from it.
+            this._slideshowClearRefreshPending = false;
+            this._slideshowPostClear = false;
+            this._slideshowSelected = new Set(this._slideshowCurrentPaths);
+          } else {
+            // Background auto cycle: current_paths is still unreliable. Keep grid empty.
+            this._slideshowPostClear = true;
+            this._slideshowSelected = new Set();
+          }
+          if (this._hass) {
+            this._hass.callService('mqtt', 'publish', {
+              topic: 'frame_tv/cmd/slideshow/available/request',
+              payload: JSON.stringify({ req_id: Date.now() }),
+              qos: 1, retain: false,
+            }).catch(() => {});
+          }
+        }
+        this._renderOverrideGrid();
+      } else if (mode === 'override') {
+        // Panel is closed but selection was resynced — update counter badge in place
+        this._updateOverrideCounter();
+      }
     }
+  }
+
+  _schedulePostUploadRefresh(remaining) {
+    if (this._postUploadRefreshTimer) clearTimeout(this._postUploadRefreshTimer);
+    if (remaining <= 0) return;
+    this._postUploadRefreshTimer = setTimeout(() => {
+      this._postUploadRefreshTimer = null;
+      if (!this._hass) return;
+      this._hass.callService('mqtt', 'publish', {
+        topic: 'frame_tv/cmd/slideshow/available/request',
+        payload: JSON.stringify({ req_id: Date.now() }),
+        qos: 1, retain: false,
+      }).catch(() => {});
+      this._schedulePostUploadRefresh(remaining - 1);
+    }, 5000);
   }
 
   _handleSlideshowAvailableMessage(message) {
@@ -1132,6 +1165,17 @@ class FrameTVArtCard extends HTMLElement {
             border-bottom: 1px solid #333;
           }
           .ftv-op-title { font-weight: 600; font-size: 0.95em; }
+          .ftv-panel-header {
+            display: flex;
+            align-items: center;
+            padding: 10px 14px 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            font-size: 0.78em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: rgba(255,255,255,0.45);
+          }
           .ftv-op-counter { font-size: 0.8em; color: rgba(255,255,255,0.55); }
           .ftv-op-warn { padding: 6px 14px 0; font-size: 0.8em; color: #ffb400; }
           .ftv-op-actions { display: flex; gap: 8px; padding: 8px 14px; }
@@ -1208,6 +1252,7 @@ class FrameTVArtCard extends HTMLElement {
             </button>
           </div>
           <div class="ftv-override-popup${this._overridePanelOpen ? ' open' : ''}" id="ftv-override-popup">
+            <div class="ftv-panel-header">Slideshow</div>
             <div class="ftv-op-settings">
               <div class="ftv-op-settings-row">
                 <select class="ftv-op-select" id="ftv-op-type">
@@ -1268,6 +1313,7 @@ class FrameTVArtCard extends HTMLElement {
             <div class="ftv-refresh-log"></div>
           </div>
           <div class="ftv-settings" id="ftv-settings">
+            <div class="ftv-panel-header">Settings</div>
             <div class="ftv-field">
               <div class="ftv-label">Frame TV IP address</div>
               <input class="ftv-input" id="ftv-tv-ip" type="text" placeholder="e.g. 10.83.21.57" />
