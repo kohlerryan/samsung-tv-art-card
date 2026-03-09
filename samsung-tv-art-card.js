@@ -153,7 +153,9 @@ class FrameTVArtCard extends HTMLElement {
     const ackMessage = (this._refreshAck && this._refreshAck.message) || '';
     const ackReqId = (this._refreshAck && this._refreshAck.req_id) || '';
     const syncStatus = (this._syncAck && this._syncAck.status) || '';
-    return `${file}|${selected}|${options}|${ackStatus}|${ackMessage}|${ackReqId}|${syncStatus}|${this._refreshInProgress}|${this._slideshowMode}|${this._overridePanelOpen}|${this._slideshowSeq}|${this._slideshowUpdateMins}|${this._slideshowMaxUploads}|${this._slideshowUploading}`;
+    const artAttrs = this._getAttrs(this._config.selected_artwork_file_entity);
+    const inArtMode = artAttrs ? String(artAttrs.in_art_mode) : 'true';
+    return `${file}|${selected}|${options}|${ackStatus}|${ackMessage}|${ackReqId}|${syncStatus}|${this._refreshInProgress}|${this._slideshowMode}|${this._overridePanelOpen}|${this._slideshowSeq}|${this._slideshowUpdateMins}|${this._slideshowMaxUploads}|${this._slideshowUploading}|${inArtMode}`;
   }
 
   disconnectedCallback() {
@@ -666,7 +668,9 @@ class FrameTVArtCard extends HTMLElement {
       const normalizedFile = String(file || '').trim().toLowerCase();
       const standbyLike = isStandby || !normalizedFile || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
       
-      if (standbyLike) {
+      if (isStandby && attrs && attrs.in_art_mode === false) {
+        artworkText = 'TV is not in art mode';
+      } else if (standbyLike) {
         artworkText = 'Please stand by as artwork is loaded...';
       } else {
         // Prefer MQTT attributes if provided by the sensor
@@ -741,7 +745,7 @@ class FrameTVArtCard extends HTMLElement {
       const normalizedFile = String(file || '').trim().toLowerCase();
       const standbyLike = isStandby || !normalizedFile || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
       const artworkText = standbyLike 
-        ? 'Please stand by as artwork is loaded...'
+        ? (attrs && attrs.in_art_mode === false ? 'TV is not in art mode' : 'Please stand by as artwork is loaded...')
         : `
         ${fArtist ? `<div style=\"line-height:1.3; margin-top: 2px;\"><span style=\"font-size:1.1em; font-weight:bold; color: white;\">${this._formatInline(fArtist)}</span></div>` : ''}
             <div style=\"line-height:1.3; margin-top: 8px;\"><em style=\"font-size:1.1em; color: white;\">${this._formatInline(fTitle)}</em>${fYear ? `<span style=\"font-size:0.9em; color: rgba(255,255,255,0.7);\">, ${fYear}</span>` : ''}</div>
@@ -849,7 +853,8 @@ class FrameTVArtCard extends HTMLElement {
     // While a refresh is in progress, force standby display regardless of HA state
     const standbyBgUrl = this._config.standby_image_path || `${this._getBaseImagePath()}/standby.png`;
     const bgUrl = this._refreshInProgress ? standbyBgUrl : this._getBackgroundUrl();
-    const isStandby = !inArtMode || this._refreshInProgress || !normalizedFile || normalizedFile === 'standby.png' || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
+    const isNotInArtMode = !inArtMode;
+    const isStandby = isNotInArtMode || this._refreshInProgress || !normalizedFile || normalizedFile === 'standby.png' || normalizedFile === 'unknown' || normalizedFile === 'unavailable' || normalizedFile === 'none';
     this._isStandbyLike = isStandby;
     const hasArtwork = bgUrl !== null;
 
@@ -889,7 +894,7 @@ class FrameTVArtCard extends HTMLElement {
             padding: 12px;
             position: relative;
             border-radius: var(--ha-card-border-radius, 12px);
-            ${hasArtwork ? `background: linear-gradient(rgba(0,0,0,0.1), rgba(0,0,0,0.1)), url("${bgUrl}"); background-size: cover; background-position: center;` : ''}
+            ${isNotInArtMode ? '' : hasArtwork ? `background: linear-gradient(rgba(0,0,0,0.1), rgba(0,0,0,0.1)), url("${bgUrl}"); background-size: cover; background-position: center;` : ''}
           }
           .ftv-header {
             display: flex;
@@ -1413,6 +1418,9 @@ class FrameTVArtCard extends HTMLElement {
         if (btnRestartEnv) btnRestartEnv.disabled = tvBlocked;
         if (btnSyncCollections) btnSyncCollections.disabled = tvBlocked;
         if (tvBlocked && btnApplyEnv) btnApplyEnv.disabled = true;
+        if (btnRefresh) btnRefresh.disabled = tvBlocked;
+        const btnApply = this.querySelector('#ftv-apply');
+        if (tvBlocked && btnApply) btnApply.disabled = true;
         if (envMsg) {
           if (tvBlocked) envMsg.textContent = 'TV is not in Art Mode — buttons unavailable.';
           else if (envMsg.textContent === 'TV is not in Art Mode — buttons unavailable.') envMsg.textContent = '';
@@ -1753,7 +1761,7 @@ class FrameTVArtCard extends HTMLElement {
         const changed = !this._arraysEqual(this._currentSelected, this._baselineSelected);
         if (applyBtn) {
           applyBtn.style.display = changed ? 'flex' : 'none';
-          applyBtn.disabled = !changed;
+          applyBtn.disabled = !changed || !!this._isStandbyLike;
         }
       });
     });
@@ -1770,7 +1778,7 @@ class FrameTVArtCard extends HTMLElement {
       if (applyBtn) {
         const changed = !this._arraysEqual(this._currentSelected, this._baselineSelected);
         applyBtn.style.display = changed ? 'flex' : 'none';
-        applyBtn.disabled = !changed;
+        applyBtn.disabled = !changed || !!this._isStandbyLike;
       }
       this.querySelectorAll('.ftv-option.selected').forEach(o => o.classList.remove('selected'));
     });
@@ -1780,7 +1788,7 @@ class FrameTVArtCard extends HTMLElement {
     if (applyBtn) {
       const changed = !this._arraysEqual(this._currentSelected, this._baselineSelected);
       applyBtn.style.display = changed ? 'flex' : 'none';
-      applyBtn.disabled = !changed;
+      applyBtn.disabled = !changed || !!this._isStandbyLike;
       applyBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!this._hass) return;
@@ -1911,7 +1919,7 @@ class FrameTVArtCard extends HTMLElement {
     }
   }
 
-console.info('%c FRAME-TV-ART-CARD %c v0.2.0-beta.2 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
+console.info('%c FRAME-TV-ART-CARD %c v0.2.0-beta.3 ', 'color: white; background: #03a9f4; font-weight: bold;', '');
 
 // Register custom element so Lovelace can use <frame-tv-art-card>
 try {
