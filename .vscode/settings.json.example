@@ -1,0 +1,5 @@
+{
+    "deploy.host": "your-host",
+    "deploy.sshPort": "22",
+    "deploy.path": "/path/to/homeassistant/config/www/community/samsung-tv-art-card/"
+}

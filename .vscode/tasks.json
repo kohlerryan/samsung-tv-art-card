@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Watch & Copy to samsung-tv-art-card",
+            "type": "shell",
+            "command": "echo samsung-tv-art-card.js | entr sh -c 'gzip -k -f samsung-tv-art-card.js && rsync -e \"ssh -p ${config:deploy.sshPort}\" samsung-tv-art-card.js samsung-tv-art-card.js.gz ${config:deploy.host}:${config:deploy.path}'",
+            "isBackground": true,
+            "problemMatcher": [],
+			"runOptions": {
+				"runOn": "folderOpen"
+			}
+        }
+    ]
+}
