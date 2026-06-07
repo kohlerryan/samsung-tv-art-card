@@ -3,13 +3,25 @@
     "tasks": [
         {
             "label": "Watch & Copy to samsung-tv-art-card",
-            "type": "shell",
-            "command": "echo samsung-tv-art-card.js | entr sh -c 'gzip -k -f samsung-tv-art-card.js && rsync -e \"ssh -p ${config:deploy.sshPort}\" samsung-tv-art-card.js samsung-tv-art-card.js.gz ${config:deploy.host}:${config:deploy.path}'",
+            "type": "process",
+            "command": "python3",
+            "windows": {
+                "command": "python"
+            },
+            "args": [
+                "scripts/watch_deploy.py",
+                "--label", "card",
+                "--host", "${config:samsungTvArtCard.deploy.host}",
+                "--port", "${config:samsungTvArtCard.deploy.sshPort}",
+                "--remote-path", "${config:samsungTvArtCard.deploy.path}",
+                "--gzip",
+                "--watch", "samsung-tv-art-card.js"
+            ],
             "isBackground": true,
             "problemMatcher": [],
-			"runOptions": {
-				"runOn": "folderOpen"
-			}
+            "runOptions": {
+                "runOn": "folderOpen"
+            }
         }
     ]
 }
